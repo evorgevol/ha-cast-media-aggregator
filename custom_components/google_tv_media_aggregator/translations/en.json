@@ -8,7 +8,7 @@
           "tmdb_api_key": "TMDb API key"
         },
         "data_description": {
-          "tmdb_api_key": "Get one at https://www.themoviedb.org/settings/api. Leave blank to only use cached and per-app fallback images."
+          "tmdb_api_key": "Get one at {tmdb_api_url}. Leave blank to only use cached and per-app fallback images."
         }
       },
       "reconfigure": {
@@ -84,7 +84,7 @@
           },
           "data_description": {
             "source_entity_id": "The media player of the Google TV Streamer.",
-            "name": "Leave blank to use the source name with \"Aggregated\" appended (entity ID media_player.<source>_aggregated).",
+            "name": "Leave blank to use the source name with \"Aggregated\" appended. The entity ID is the source's entity ID with \"_aggregated\" appended.",
             "stremio_entity_id": "Optional media player from the Stremio integration. Used to look up artwork by IMDb ID when the source is running Stremio. Leave empty to use the default aggregator for Stremio.",
             "stremio_app_ids": "App IDs or app names that identify Stremio on the source.",
             "app_filter_mode": "Restrict which apps the default aggregator looks up artwork for.",

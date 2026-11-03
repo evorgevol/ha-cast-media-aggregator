@@ -12,6 +12,7 @@ SUBENTRY_TYPE_PLAYER: Final = "aggregated_player"
 
 # Hub entry data
 CONF_TMDB_API_KEY: Final = "tmdb_api_key"
+TMDB_API_KEY_URL: Final = "https://www.themoviedb.org/settings/api"
 
 # Hub entry options
 CONF_VIDEO_THRESHOLD: Final = "video_threshold_minutes"

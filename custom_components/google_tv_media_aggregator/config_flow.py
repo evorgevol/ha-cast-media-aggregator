@@ -60,6 +60,7 @@ from .const import (
     DOMAIN,
     SUBENTRY_TYPE_PLAYER,
     TITLE,
+    TMDB_API_KEY_URL,
 )
 from .helpers import default_player_name
 from .runtime import SeenApps, settings_from_options
@@ -147,6 +148,7 @@ class GoogleTvMediaAggregatorConfigFlow(ConfigFlow, domain=DOMAIN):
                 {vol.Optional(CONF_TMDB_API_KEY): PASSWORD_SELECTOR}
             ),
             errors=errors,
+            description_placeholders={"tmdb_api_url": TMDB_API_KEY_URL},
         )
 
     async def async_step_reconfigure(
