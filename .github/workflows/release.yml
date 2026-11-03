@@ -1,0 +1,79 @@
+name: Release
+
+# Publishes a GitHub release (which HACS offers as an update) whenever files that ship
+# to users change on main. The version and release notes come from the commit
+# messages since the previous release; see "Releases" in the README.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "custom_components/**"
+      - "hacs.json"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (X.Y.Z). Leave empty to work it out from the commits."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: Tests
+    uses: ./.github/workflows/tests.yml
+
+  validate:
+    name: Validate
+    uses: ./.github/workflows/validate.yml
+
+  release:
+    name: Publish release
+    needs: [tests, validate]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DOMAIN: google_tv_media_aggregator
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Work out version and release notes
+        id: next
+        run: python .github/scripts/release.py --notes-file "$RUNNER_TEMP/notes.md" --version "$VERSION"
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Build release archive
+        if: steps.next.outputs.release == 'true'
+        working-directory: custom_components/${{ env.DOMAIN }}
+        run: |
+          jq --arg version "$VERSION" '.version = $version' manifest.json > "$RUNNER_TEMP/manifest.json"
+          mv "$RUNNER_TEMP/manifest.json" manifest.json
+          zip -r "$GITHUB_WORKSPACE/$DOMAIN.zip" . -x "*__pycache__*"
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+
+      - name: Publish release
+        if: steps.next.outputs.release == 'true'
+        run: |
+          gh release create "$TAG" "$DOMAIN.zip" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.next.outputs.tag }}

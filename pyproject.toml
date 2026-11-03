@@ -1,6 +1,7 @@
 [project]
 name = "ha-google-tv-media-aggregator"
-version = "0.1.0"
+# Placeholder: releases are versioned by git tags (see "Releases" in the README).
+version = "0.0.0"
 description = "Home Assistant custom integration that adds artwork to Google TV Streamer media players."
 requires-python = ">=3.13"
 license = "MIT"

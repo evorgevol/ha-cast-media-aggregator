@@ -131,6 +131,32 @@ python -m venv .venv
 
 The tests use [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component). They run on Linux and macOS; Home Assistant's test harness doesn't support Windows natively, so use WSL or the CI. CI runs ruff, plus the tests against both the latest Home Assistant and the minimum supported version, and validates with hassfest and HACS.
 
+### Testing on your own Home Assistant
+
+- **Released version:** install through HACS as described in [Installation](#installation).
+- **Work in progress:** copy `custom_components/google_tv_media_aggregator` into `/config/custom_components/` (for example with the Samba or Studio Code Server add-on) and restart Home Assistant. Remove the HACS-installed copy first, otherwise HACS overwrites it. Manual copies report version `0.0.0`.
+
+## Releases
+
+Every push to `main` that changes `custom_components/` or `hacs.json` publishes a [GitHub release](https://github.com/evorgevol/ha-cast-media-aggregator/releases) once the tests and validation pass. HACS offers it as an update, and the update dialog shows the release notes of every release between the installed version and the latest one.
+
+The [release workflow](.github/workflows/release.yml) works out the version and the notes from the commit messages since the previous release, using [Conventional Commits](https://www.conventionalcommits.org):
+
+| Commit message | Version bump | Release notes section |
+| --- | --- | --- |
+| `feat!: …` or a `BREAKING CHANGE:` footer | major (`1.4.2` → `2.0.0`) | ⚠️ Breaking changes |
+| `feat: …` / `feat(scope): …` | minor (`1.4.2` → `1.5.0`) | Features |
+| `fix: …` | patch (`1.4.2` → `1.4.3`) | Fixes |
+| `perf: …` | patch | Performance |
+| anything else (`refactor:`, `docs:`, plain messages) | patch | Other changes |
+
+Write commit messages for users, since they become the release notes. Only commits that touch `custom_components/` or `hacs.json` are included.
+
+- To push several commits without releasing each one, put `[skip release]` in the last commit's message. The next release includes all of them.
+- To release a specific version (for example `1.0.0`), run the **Release** workflow manually from the Actions tab and enter the version.
+
+The `version` in `manifest.json` is a `0.0.0` placeholder. The workflow writes the real version into the `google_tv_media_aggregator.zip` attached to each release, which is what HACS installs.
+
 ## Attribution
 
 This product uses the TMDb API but is not endorsed or certified by TMDb.
