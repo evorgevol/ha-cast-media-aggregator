@@ -1,0 +1,14 @@
+{
+  "domain": "google_tv_media_aggregator",
+  "name": "Google TV Streamer Media Aggregator",
+  "codeowners": ["@evorgevol"],
+  "config_flow": true,
+  "dependencies": ["media_player"],
+  "documentation": "https://github.com/evorgevol/ha-cast-media-aggregator",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/evorgevol/ha-cast-media-aggregator/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

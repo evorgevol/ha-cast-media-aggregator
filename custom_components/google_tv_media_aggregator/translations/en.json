@@ -1,0 +1,138 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Google TV Streamer Media Aggregator",
+        "description": "Optionally enter a TMDb API key (v3) or API Read Access Token (v4). It is used to look up posters for movies and TV shows. You can add it later via Reconfigure.",
+        "data": {
+          "tmdb_api_key": "TMDb API key"
+        },
+        "data_description": {
+          "tmdb_api_key": "Get one at https://www.themoviedb.org/settings/api. Leave blank to only use cached and per-app fallback images."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure TMDb",
+        "description": "Change the TMDb API key. Clear the field to stop using TMDb.",
+        "data": {
+          "tmdb_api_key": "TMDb API key"
+        }
+      },
+      "reauth_confirm": {
+        "title": "TMDb API key rejected",
+        "description": "TMDb rejected the configured API key. Enter a new key, or leave blank to stop using TMDb.",
+        "data": {
+          "tmdb_api_key": "TMDb API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "TMDb rejected the API key.",
+      "cannot_connect": "Unable to connect to TMDb."
+    },
+    "abort": {
+      "already_configured": "The integration is already configured. Add players with the \"Add aggregated player\" button.",
+      "single_instance_allowed": "The integration is already configured. Add players with the \"Add aggregated player\" button.",
+      "reauth_successful": "The TMDb API key was updated.",
+      "reconfigure_successful": "The TMDb API key was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Aggregator settings",
+        "description": "These settings apply to all aggregated players. Per-app fallback images can be placed in the `default_apps` folder inside the cache directory (e.g. `default_apps/stremio.jpg`).",
+        "data": {
+          "video_threshold_minutes": "Video threshold",
+          "cache_enabled": "Cache images locally",
+          "cache_dir": "Cache directory",
+          "tmdb_language": "TMDb language"
+        },
+        "data_description": {
+          "video_threshold_minutes": "Media longer than this (or of unknown length) is treated as a movie/TV show; shorter media is treated as music and skipped.",
+          "cache_enabled": "Store downloaded artwork on disk and serve it from there. When off, TMDb image URLs are used directly.",
+          "cache_dir": "Must be inside a media directory or allowlist_external_dirs. Default: /media/tv-streamer-media/",
+          "tmdb_language": "Language for TMDb lookups, e.g. en-AU. Leave blank for the TMDb default."
+        }
+      }
+    },
+    "error": {
+      "cache_dir_not_absolute": "The cache directory must be an absolute path.",
+      "cache_dir_not_allowed": "This path is not allowed. Use a path under a media directory or add it to allowlist_external_dirs.",
+      "cache_dir_not_writable": "The cache directory could not be created or is not writable."
+    }
+  },
+  "config_subentries": {
+    "aggregated_player": {
+      "initiate_flow": {
+        "user": "Add aggregated player",
+        "reconfigure": "Reconfigure aggregated player"
+      },
+      "entry_type": "Aggregated player",
+      "step": {
+        "user": {
+          "title": "Add aggregated player",
+          "description": "Pick the Google TV Streamer media player to wrap. A new media player will mirror it and add artwork.",
+          "data": {
+            "source_entity_id": "Source media player",
+            "name": "Name",
+            "stremio_entity_id": "Stremio media player",
+            "stremio_app_ids": "Stremio app IDs",
+            "app_filter_mode": "App filter",
+            "app_filter_list": "Apps",
+            "prefer_source_image": "Prefer the source's own image"
+          },
+          "data_description": {
+            "source_entity_id": "The media player of the Google TV Streamer.",
+            "name": "Leave blank to use the source name with \"Aggregated\" appended (entity ID media_player.<source>_aggregated).",
+            "stremio_entity_id": "Optional media player from the Stremio integration. Used to look up artwork by IMDb ID when the source is running Stremio. Leave empty to use the default aggregator for Stremio.",
+            "stremio_app_ids": "App IDs or app names that identify Stremio on the source.",
+            "app_filter_mode": "Restrict which apps the default aggregator looks up artwork for.",
+            "app_filter_list": "App IDs or names for the filter. Pick from apps seen before or type your own (comma separated is fine).",
+            "prefer_source_image": "If the source already provides an image, use it instead of looking one up."
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure aggregated player",
+          "description": "Changing the name updates the device name; the entity ID is kept.",
+          "data": {
+            "source_entity_id": "Source media player",
+            "name": "Name",
+            "stremio_entity_id": "Stremio media player",
+            "stremio_app_ids": "Stremio app IDs",
+            "app_filter_mode": "App filter",
+            "app_filter_list": "Apps",
+            "prefer_source_image": "Prefer the source's own image"
+          },
+          "data_description": {
+            "source_entity_id": "The media player of the Google TV Streamer.",
+            "name": "Leave blank to use the source name with \"Aggregated\" appended.",
+            "stremio_entity_id": "Optional media player from the Stremio integration. Used to look up artwork by IMDb ID when the source is running Stremio. Leave empty to use the default aggregator for Stremio.",
+            "stremio_app_ids": "App IDs or app names that identify Stremio on the source.",
+            "app_filter_mode": "Restrict which apps the default aggregator looks up artwork for.",
+            "app_filter_list": "App IDs or names for the filter. Pick from apps seen before or type your own (comma separated is fine).",
+            "prefer_source_image": "If the source already provides an image, use it instead of looking one up."
+          }
+        }
+      },
+      "error": {
+        "source_is_aggregated": "Pick the original media player, not an aggregated one.",
+        "source_already_configured": "An aggregated player already exists for this media player.",
+        "stremio_is_source": "The Stremio media player cannot be the same as the source."
+      },
+      "abort": {
+        "already_configured": "An aggregated player already exists for this media player.",
+        "reconfigure_successful": "The aggregated player was updated."
+      }
+    }
+  },
+  "selector": {
+    "app_filter_mode": {
+      "options": {
+        "none": "All apps",
+        "allow": "Only the listed apps (allow list)",
+        "deny": "All apps except the listed ones (deny list)"
+      }
+    }
+  }
+}
