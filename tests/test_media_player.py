@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
     async_mock_service,
@@ -27,7 +29,7 @@ from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.core import EVENT_CALL_SERVICE, Event, HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .conftest import SOURCE, make_entry, player_subentry, setup_integration
+from .conftest import SOURCE, TMDB_KEY, make_entry, player_subentry, setup_integration
 
 API = "https://api.themoviedb.org/3"
 POSTER = "https://image.tmdb.org/t/p/w500/inception.jpg"
@@ -459,3 +461,124 @@ async def test_service_call_through_entity(
     targets = [str(c.data["service_data"]["entity_id"]) for c in calls]
     assert ENTITY in targets[0]
     assert SOURCE in targets[1]
+
+
+def history(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Return the entity's lookup traces as dicts."""
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    return [
+        lookup.as_dict()
+        for traces in entry.runtime_data.lookup_history.values()
+        for lookup in traces
+    ]
+
+
+async def test_debug_logging(
+    hass: HomeAssistant,
+    cache_dir: Path,
+    aioclient_mock: AiohttpClientMocker,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(
+        logging.DEBUG, logger="custom_components.google_tv_media_aggregator"
+    )
+    set_source(hass, media_title="Inception")
+    mock_inception(aioclient_mock)
+    await setup_integration(hass, make_entry(cache_dir))
+
+    text = caplog.text
+    assert f"{ENTITY}: tracking {SOURCE};" in text
+    assert f"{ENTITY}: looking up artwork (trigger: startup; changed: -)" in text
+    assert "stremio aggregator skipped: no Stremio media player configured" in text
+    assert "default: classified as movie (duration unknown; no media_artist)" in text
+    assert "default: no cached image for 'movie/Inception'" in text
+    assert "TMDb GET /search/movie" in text
+    assert "default: saved image to" in text
+    assert "default aggregator found artwork" in text
+    assert (
+        f"{ENTITY}: artwork: {{'status': 'done', 'image_source': 'aggregator'" in text
+    )
+    assert TMDB_KEY not in text
+
+    # Position updates keep the key, so nothing is looked up or logged.
+    caplog.clear()
+    set_source(hass, media_title="Inception", media_position=120)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert "looking up artwork" not in caplog.text
+
+    set_source(hass, media_title="Inception", app_name="Plex")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert f"trigger: {SOURCE} changed; changed: app_name)" in caplog.text
+    assert "default: cached image for 'movie/Inception'" in caplog.text
+
+    set_source(hass, "off")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert f"{ENTITY}: {SOURCE} is off; clearing artwork" in caplog.text
+
+    lookups = history(hass)
+    assert len(lookups) == 2
+    first = lookups[0]
+    assert first["trigger"] == "startup"
+    assert first["context"]["title"] == "Inception"
+    assert first["outcome"]["status"] == "done"
+    assert first["outcome"]["aggregator"] == "default"
+    assert first["outcome"]["tmdb_id"] == 27205
+    assert first["outcome"]["file"].endswith("inception.jpg")
+    assert any("TMDb GET /search/movie" in step for step in first["steps"])
+    assert all(step.startswith("+") for step in first["steps"])
+
+
+async def test_trace_remembered_miss(
+    hass: HomeAssistant, cache_dir: Path, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.get(f"{API}/search/movie", json={"results": []})
+    aioclient_mock.get(f"{API}/search/multi", json={"results": []})
+    set_source(hass, media_title="Obscure Thing")
+    await setup_integration(hass, make_entry(cache_dir))
+    set_source(hass, media_title="Obscure Thing", app_name="Plex")
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    first, second = history(hass)
+    assert any(
+        "default: nothing found for 'movie/Obscure Thing'; remembering that for 6h"
+        in step
+        for step in first["steps"]
+    )
+    assert second["changed"] == ["app_name"]
+    assert any(
+        "'movie/Obscure Thing' found nothing recently; not looking it up again for 5h"
+        in step
+        for step in second["steps"]
+    )
+    assert second["outcome"] == {"status": "done", "image_source": "none"}
+    assert aioclient_mock.call_count == 2
+
+
+async def test_trace_source_image_preferred(
+    hass: HomeAssistant, cache_dir: Path
+) -> None:
+    set_source(hass, media_title="Inception", entity_picture="/api/source/pic")
+    await setup_integration(hass, make_entry(cache_dir))
+
+    (lookup,) = history(hass)
+    assert lookup["context"]["has_source_picture"] is True
+    assert "'prefer source image' is on; not searching" in lookup["steps"][0]
+    assert lookup["outcome"] == {"status": "done", "image_source": "source"}
+
+
+async def test_trace_retry(
+    hass: HomeAssistant, cache_dir: Path, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.get(f"{API}/search/movie", status=500)
+    set_source(hass, media_title="Inception")
+    await setup_integration(hass, make_entry(cache_dir))
+
+    (lookup,) = history(hass)
+    steps = "\n".join(lookup["steps"])
+    assert "default aggregator failed: TMDb returned HTTP 500" in steps
+    assert "nothing found, but an aggregator hit a temporary error" in steps
+    assert "retrying in 1m 0s (retry 1 of 5)" in steps
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert history(hass)[-1]["trigger"] == "retry 1 of 5"

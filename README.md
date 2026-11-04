@@ -49,7 +49,7 @@ Open **Configure** on the integration to change the settings shared by all playe
 
 ## How artwork is found
 
-Each time the source's title, artist, app or state changes, the aggregated player resolves an image in this order:
+Each time what the source is playing changes, the aggregated player resolves an image in this order:
 
 1. **Source image.** If "prefer the source's own image" is on and the source has an image, that image is used.
 2. **Aggregators.** These are chosen per app. The first matching aggregator that returns a result wins:
@@ -60,6 +60,20 @@ Each time the source's title, artist, app or state changes, the aggregated playe
 5. No image.
 
 Every aggregator checks the local cache **before** making any API call. Failed lookups are remembered for 6 hours. Temporary TMDb errors are retried in the background.
+
+### When a lookup runs
+
+The aggregated player listens for state changes of the source (and the Stremio player, if configured), but only looks up artwork when one of these changes:
+
+- `media_title`, `media_artist`, `media_series_title`, `media_content_type`, `app_id` or `app_name`
+- whether `media_duration` is unknown, under the video threshold, or at least the threshold
+- the Stremio player's IMDb ID, type, titles or poster, or whether it is playing
+- whether the source has its own image
+- the source turning off, becoming unavailable or unknown (this clears the artwork)
+
+Position, volume and play/pause updates don't trigger a lookup, so in practice there is one lookup per title. A second lookup can follow when the source fills in the duration or its own image a moment later. A new lookup cancels one that is still running. After a temporary TMDb error, the lookup is retried every 60 seconds, up to 5 times.
+
+The 6-hour memory of failed lookups is kept in memory only. Restarting Home Assistant or reloading the integration clears it.
 
 ### Default aggregator
 
@@ -113,6 +127,40 @@ Each aggregated player has these extra state attributes:
 | `aggregator` | The aggregator that found the image (`stremio` or `default`). |
 | `media_kind` | `movie` or `tv`, when known. |
 | `tmdb_id` / `imdb_id` | IDs of the matched title, when known. |
+
+## Troubleshooting
+
+### Debug logging
+
+Debug logs show every decision: why a lookup started and what changed, which aggregators were skipped and why, how the media was classified, cache hits, remembered misses, each TMDb request and its result, and which image was picked. The TMDb key is never logged.
+
+To turn it on, open **Settings → Devices & services → Google TV Streamer Media Aggregator** and select **⋮ → Enable debug logging**. Play something, then select **Disable debug logging**; the log file downloads automatically. Or add this to `configuration.yaml` and restart:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.google_tv_media_aggregator: debug
+```
+
+Each line starts with the aggregated player's entity ID. For example:
+
+```text
+media_player.pablo_aggregated: looking up artwork (trigger: media_player.pablo changed; changed: title): {'state': 'playing', 'app_name': 'Netflix', 'title': 'Inception', ...}
+media_player.pablo_aggregated: stremio aggregator skipped: no Stremio media player configured
+media_player.pablo_aggregated: default: classified as movie (duration unknown; no media_artist)
+media_player.pablo_aggregated: default: no cached image for 'movie/Inception'
+media_player.pablo_aggregated: TMDb GET /search/movie {'query': 'Inception', 'include_adult': 'false', 'language': 'en-AU'}
+media_player.pablo_aggregated: TMDb /search/movie: 1 result(s), using movie 27205 'Inception'
+media_player.pablo_aggregated: default: saved image to /media/tv-streamer-media/movie/inception.jpg
+media_player.pablo_aggregated: artwork: {'status': 'done', 'image_source': 'aggregator', ...}
+```
+
+If nothing is logged when the title changes, the lookup key didn't change (see [When a lookup runs](#when-a-lookup-runs)). If a line says `found nothing recently; not looking it up again`, the title failed within the last 6 hours. Reload the integration to try again straight away.
+
+### Diagnostics
+
+**⋮ → Download diagnostics** on the integration includes, for each player, the last 5 lookups: the trigger, what changed, the source's state at the time, every step with timings, and the result. It also lists the remembered misses and hits. You don't need debug logging turned on for this.
 
 ## Out of scope (for now)
 

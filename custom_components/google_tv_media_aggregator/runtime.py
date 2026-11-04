@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -23,6 +24,7 @@ from .const import (
     SEEN_APPS_STORAGE_VERSION,
 )
 from .tmdb import TmdbClient
+from .trace import LookupTrace
 
 SEEN_APPS_SAVE_DELAY = 30
 
@@ -100,6 +102,8 @@ class RuntimeData:
     registry: AggregatorRegistry
     seen_apps: SeenApps
     tmdb: TmdbClient | None
+    # Recent artwork lookups per player subentry ID, shown in diagnostics.
+    lookup_history: dict[str, deque[LookupTrace]] = field(default_factory=dict)
 
 
 type AggregatorConfigEntry = ConfigEntry[RuntimeData]

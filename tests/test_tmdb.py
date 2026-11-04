@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import aiohttp
 import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
@@ -138,6 +140,33 @@ async def test_connection_error_does_not_leak_key(
     with pytest.raises(TmdbConnectionError) as err:
         await client.async_validate()
     assert V3_KEY not in str(err.value)
+
+
+@pytest.mark.parametrize("api_key", [V3_KEY, V4_TOKEN])
+async def test_debug_logging_does_not_leak_key(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    caplog: pytest.LogCaptureFixture,
+    api_key: str,
+) -> None:
+    caplog.set_level(
+        logging.DEBUG, logger="custom_components.google_tv_media_aggregator"
+    )
+    aioclient_mock.get(
+        f"{API}/search/movie",
+        json={"results": [{"id": 1, "title": "Heat", "poster_path": "/heat.jpg"}]},
+    )
+    aioclient_mock.get(f"{API}/configuration", exc=aiohttp.ClientConnectionError())
+    client = TmdbClient(async_get_clientsession(hass), api_key, "en-AU")
+    await client.async_search_movie("Heat", 1995)
+    with pytest.raises(TmdbConnectionError):
+        await client.async_validate()
+
+    assert "TMDb GET /search/movie" in caplog.text
+    assert "'query': 'Heat'" in caplog.text
+    assert "using movie 1 'Heat'" in caplog.text
+    assert "TMDb /configuration failed: ClientConnectionError" in caplog.text
+    assert api_key not in caplog.text
 
 
 async def test_find_by_imdb_prefers_type(

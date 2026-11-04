@@ -7,6 +7,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+import logging
 import re
 import time
 from typing import Any, ClassVar
@@ -30,6 +31,9 @@ from ..const import (
     NEGATIVE_CACHE_TTL,
 )
 from ..tmdb import TmdbClient
+from ..trace import format_seconds, trace
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MediaKind(StrEnum):
@@ -179,14 +183,18 @@ class LookupMemo:
         self._misses: OrderedDict[tuple[str, str], float] = OrderedDict()
         self._hits: OrderedDict[tuple[str, str], LookupHit] = OrderedDict()
 
+    def miss_expires_in(self, key: tuple[str, str]) -> float | None:
+        """Return seconds until a remembered miss expires, or None if not a miss."""
+        if (expires := self._misses.get(key)) is None:
+            return None
+        if (remaining := expires - time.monotonic()) < 0:
+            del self._misses[key]
+            return None
+        return remaining
+
     def is_miss(self, key: tuple[str, str]) -> bool:
         """Return True if a recent lookup found nothing."""
-        if (expires := self._misses.get(key)) is None:
-            return False
-        if expires < time.monotonic():
-            del self._misses[key]
-            return False
-        return True
+        return self.miss_expires_in(key) is not None
 
     def add_miss(self, key: tuple[str, str]) -> None:
         """Remember a lookup that found nothing."""
@@ -205,6 +213,25 @@ class LookupMemo:
         self._hits.move_to_end(key)
         while len(self._hits) > self._size:
             self._hits.popitem(last=False)
+
+    def snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        """Return remembered misses and hits (for diagnostics)."""
+        now = time.monotonic()
+        return {
+            "misses": [
+                {
+                    "category": category,
+                    "key": key,
+                    "expires_in": format_seconds(expires - now),
+                }
+                for (category, key), expires in self._misses.items()
+                if expires >= now
+            ],
+            "hits": [
+                {"category": category, "key": key, "url": hit.url}
+                for (category, key), hit in self._hits.items()
+            ],
+        }
 
 
 @dataclass(slots=True)
@@ -242,6 +269,10 @@ class Aggregator(ABC):
     def matches(self, ctx: MediaContext, player: PlayerConfig) -> bool:
         """Return True if this aggregator should handle the context."""
 
+    def skip_reason(self, ctx: MediaContext, player: PlayerConfig) -> str:
+        """Explain why matches() returned False (for debug logging)."""
+        return "not applicable"
+
     @abstractmethod
     async def async_resolve(
         self, ctx: MediaContext, player: PlayerConfig
@@ -260,25 +291,49 @@ class Aggregator(ABC):
         TMDb errors propagate so transient failures are not remembered as misses.
         """
         deps = self._deps
+        name = self.name
+        label = f"{category}/{key}"
         if (cached := await deps.cache.async_get(category, key)) is not None:
+            trace(_LOGGER, "%s: cached image for %r: %s", name, label, cached.path)
             return ImageResult(self.name, kind, image=cached)
+        if deps.cache.enabled:
+            trace(_LOGGER, "%s: no cached image for %r", name, label)
 
         memo_key = (category, key)
-        if deps.memo.is_miss(memo_key):
+        if (remaining := deps.memo.miss_expires_in(memo_key)) is not None:
+            trace(
+                _LOGGER,
+                "%s: %r found nothing recently; not looking it up again for %s",
+                name,
+                label,
+                format_seconds(remaining),
+            )
             return None
         if (hit := deps.memo.get_hit(memo_key)) is None:
+            trace(_LOGGER, "%s: looking up %r", name, label)
             hit = await lookup()
             if hit is None:
                 deps.memo.add_miss(memo_key)
+                trace(
+                    _LOGGER,
+                    "%s: nothing found for %r; remembering that for %s",
+                    name,
+                    label,
+                    format_seconds(NEGATIVE_CACHE_TTL.total_seconds()),
+                )
                 return None
+            trace(_LOGGER, "%s: found %s", name, hit.url)
+        else:
+            trace(_LOGGER, "%s: remembered result for %r: %s", name, label, hit.url)
 
-        if (
-            deps.cache.writable
-            and (downloaded := await async_download_image(deps.session, hit.url))
-            is not None
-            and (cached := await deps.cache.async_put(category, key, *downloaded))
-            is not None
-        ):
+        if not deps.cache.writable:
+            trace(_LOGGER, "%s: image cache not writable; using remote URL", name)
+        elif (
+            downloaded := await async_download_image(deps.session, hit.url)
+        ) is not None and (
+            cached := await deps.cache.async_put(category, key, *downloaded)
+        ) is not None:
+            trace(_LOGGER, "%s: saved image to %s", name, cached.path)
             return ImageResult(
                 self.name,
                 kind,
@@ -286,6 +341,8 @@ class Aggregator(ABC):
                 tmdb_id=hit.tmdb_id,
                 imdb_id=hit.imdb_id,
             )
+        else:
+            trace(_LOGGER, "%s: could not cache the image; using remote URL", name)
 
         deps.memo.add_hit(memo_key, hit)
         return ImageResult(

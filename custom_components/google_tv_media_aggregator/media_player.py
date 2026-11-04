@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from collections import deque
+from dataclasses import dataclass, fields, replace
 import hashlib
 import logging
 from typing import Any
@@ -57,6 +58,7 @@ from .aggregators import (
 )
 from .cache import CachedImage
 from .const import (
+    APP_FALLBACK_DIR,
     ATTR_AGGREGATOR,
     ATTR_IMAGE_SOURCE,
     ATTR_IMDB_ID,
@@ -76,6 +78,14 @@ from .const import (
 from .helpers import suggested_object_id
 from .runtime import AggregatorConfigEntry
 from .tmdb import TmdbAuthError
+from .trace import (
+    HISTORY_SIZE,
+    LookupTrace,
+    format_seconds,
+    reset_trace,
+    set_trace,
+    trace,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -143,6 +153,22 @@ class _Image:
     url: str | None = None
     result: ImageResult | None = None
 
+    def describe(self) -> dict[str, Any]:
+        """Return a summary for debug logs and diagnostics."""
+        details: dict[str, Any] = {"image_source": self.source}
+        if self.local is not None:
+            details["file"] = str(self.local.path)
+        if self.url is not None:
+            details["url"] = self.url
+        if (result := self.result) is not None:
+            details["aggregator"] = result.aggregator
+            details["media_kind"] = result.media_kind.value
+            if result.tmdb_id is not None:
+                details["tmdb_id"] = result.tmdb_id
+            if result.imdb_id is not None:
+                details["imdb_id"] = result.imdb_id
+        return details
+
 
 class AggregatedMediaPlayer(MediaPlayerEntity):
     """Mirrors a source media player and adds artwork from aggregators."""
@@ -176,15 +202,33 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
         self._lookup_task: asyncio.Task[None] | None = None
         self._retry_unsub: Any = None
         self._retries = 0
+        self._history: deque[LookupTrace] = (
+            entry.runtime_data.lookup_history.setdefault(
+                subentry.subentry_id, deque(maxlen=HISTORY_SIZE)
+            )
+        )
+
+    def _debug(self, msg: str, *args: Any) -> None:
+        _LOGGER.debug("%s: " + msg, self.entity_id, *args, stacklevel=2)
 
     # ------------------------------------------------------------------ lifecycle
 
     async def async_added_to_hass(self) -> None:
         """Start tracking the source (and Stremio) entities."""
         await super().async_added_to_hass()
-        tracked = [self._player.source_entity_id]
-        if self._player.stremio_entity_id:
-            tracked.append(self._player.stremio_entity_id)
+        player = self._player
+        tracked = [player.source_entity_id]
+        if player.stremio_entity_id:
+            tracked.append(player.stremio_entity_id)
+        self._debug(
+            "tracking %s; prefer source image: %s; app filter: %s %s;"
+            " Stremio app IDs: %s",
+            ", ".join(tracked),
+            player.prefer_source_image,
+            player.app_filter_mode,
+            list(player.app_filter_list),
+            list(player.stremio_app_ids),
+        )
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, tracked, self._async_tracked_changed
@@ -192,12 +236,12 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
         )
         self.async_on_remove(self._async_cancel_lookup)
         self._async_sync_from_source()
-        self._async_schedule_lookup()
+        self._async_schedule_lookup("startup")
 
     @callback
     def _async_tracked_changed(self, event: Event[EventStateChangedData]) -> None:
         self._async_sync_from_source()
-        self._async_schedule_lookup()
+        self._async_schedule_lookup(f"{event.data['entity_id']} changed")
         self.async_write_ha_state()
 
     # ------------------------------------------------------------------ mirroring
@@ -283,28 +327,87 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
             self._source_picture is not None,
         )
 
+    @staticmethod
+    def _key_changes(old: Any, new: Any) -> list[str]:
+        """Names of what changed between two lookup keys."""
+        if old is None or new is None:
+            return []
+        (old_ctx, old_picture), (new_ctx, new_picture) = old, new
+        changed = [
+            "duration (video threshold)" if f.name == "duration" else f.name
+            for f in fields(MediaContext)
+            if getattr(old_ctx, f.name) != getattr(new_ctx, f.name)
+        ]
+        if old_picture != new_picture:
+            changed.append("source picture")
+        return changed
+
+    def _context_summary(self, ctx: MediaContext) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "state": ctx.state,
+            "app_id": ctx.app_id,
+            "app_name": ctx.app_name,
+            "title": ctx.title,
+            "artist": ctx.artist,
+            "series_title": ctx.series_title,
+            "content_type": ctx.content_type,
+            "duration": ctx.duration,
+            "has_source_picture": self._source_picture is not None,
+        }
+        if (stremio := ctx.stremio) is not None:
+            summary["stremio"] = {
+                "state": stremio.state,
+                "imdb_id": stremio.imdb_id,
+                "type": stremio.media_type,
+                "title": stremio.title,
+                "series_title": stremio.series_title,
+                "has_poster": bool(stremio.poster),
+            }
+        return summary
+
     @callback
-    def _async_schedule_lookup(self, force: bool = False) -> None:
+    def _async_schedule_lookup(self, trigger: str, force: bool = False) -> None:
         ctx = self._async_build_context()
         key = None if ctx is None else self._lookup_key_for(ctx)
         if key == self._lookup_key and not force:
             return
         if key != self._lookup_key:
             self._retries = 0
+        previous_key = self._lookup_key
         self._lookup_key = key
         self._async_cancel_lookup()
         if ctx is None:
+            state = self.hass.states.get(self._player.source_entity_id)
+            self._debug(
+                "%s is %s; clearing artwork",
+                self._player.source_entity_id,
+                state.state if state else "missing",
+            )
             self._image = _Image()
             return
+        lookup_trace = LookupTrace(
+            entity_id=self.entity_id,
+            trigger=trigger,
+            context=self._context_summary(ctx),
+            changed=self._key_changes(previous_key, key),
+        )
+        self._debug(
+            "looking up artwork (trigger: %s; changed: %s): %s",
+            trigger,
+            ", ".join(lookup_trace.changed) or "-",
+            lookup_trace.context,
+        )
+        self._history.append(lookup_trace)
         self._lookup_task = self._entry.async_create_background_task(
             self.hass,
-            self._async_lookup(ctx, key),
+            self._async_lookup(ctx, key, lookup_trace),
             f"{DOMAIN} artwork lookup for {self.entity_id}",
         )
 
     @callback
     def _async_cancel_lookup(self) -> None:
         if self._lookup_task is not None and not self._lookup_task.done():
+            self._debug("cancelling the running lookup")
             self._lookup_task.cancel()
         self._lookup_task = None
         if self._retry_unsub is not None:
@@ -313,9 +416,19 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
 
     @callback
     def _async_schedule_retry(self) -> None:
-        if self._retries >= LOOKUP_MAX_RETRIES or self._retry_unsub is not None:
+        if self._retry_unsub is not None:
+            return
+        if self._retries >= LOOKUP_MAX_RETRIES:
+            trace(_LOGGER, "giving up after %d retries", LOOKUP_MAX_RETRIES)
             return
         self._retries += 1
+        trace(
+            _LOGGER,
+            "retrying in %s (retry %d of %d)",
+            format_seconds(LOOKUP_RETRY_DELAY.total_seconds()),
+            self._retries,
+            LOOKUP_MAX_RETRIES,
+        )
         self._retry_unsub = async_call_later(
             self.hass, LOOKUP_RETRY_DELAY, self._async_retry
         )
@@ -323,12 +436,27 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
     @callback
     def _async_retry(self, _now: Any) -> None:
         self._retry_unsub = None
-        self._async_schedule_lookup(force=True)
+        self._async_schedule_lookup(
+            f"retry {self._retries} of {LOOKUP_MAX_RETRIES}", force=True
+        )
 
-    async def _async_lookup(self, ctx: MediaContext, key: Any) -> None:
-        image = await self._async_resolve_image(ctx)
+    async def _async_lookup(
+        self, ctx: MediaContext, key: Any, lookup_trace: LookupTrace
+    ) -> None:
+        token = set_trace(lookup_trace)
+        try:
+            image = await self._async_resolve_image(ctx)
+        except asyncio.CancelledError:
+            lookup_trace.finish("cancelled")
+            raise
+        finally:
+            reset_trace(token)
         if key != self._lookup_key:
+            lookup_trace.finish("discarded", **image.describe())
+            self._debug("discarding lookup result: what is playing has changed")
             return
+        lookup_trace.finish("done", **image.describe())
+        self._debug("artwork: %s", lookup_trace.outcome)
         self._image = image
         self.async_write_ha_state()
 
@@ -337,6 +465,11 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
         player = self._player
         has_source_picture = self._source_picture is not None
         if player.prefer_source_image and has_source_picture:
+            trace(
+                _LOGGER,
+                "the source has its own image and 'prefer source image' is on;"
+                " not searching",
+            )
             return _Image(source=IMAGE_SOURCE_SOURCE)
 
         if ctx.title:
@@ -348,7 +481,8 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
                 self._entry.async_start_reauth(self.hass)
             except TransientLookupError:
                 self._async_schedule_retry()
-            except Exception:
+            except Exception as err:
+                trace(_LOGGER, "unexpected error: %r", err)
                 _LOGGER.exception(
                     "Unexpected error resolving artwork for %s", ctx.title
                 )
@@ -359,15 +493,24 @@ class AggregatedMediaPlayer(MediaPlayerEntity):
                     url=result.url,
                     result=result,
                 )
+        else:
+            trace(_LOGGER, "the source has no media_title; not searching")
 
         if has_source_picture:
+            trace(_LOGGER, "using the source's own image")
             return _Image(source=IMAGE_SOURCE_SOURCE)
 
         fallback = await self._runtime.cache.async_find_app_fallback(
             ctx.app_name, ctx.app_id
         )
         if fallback is not None:
+            trace(_LOGGER, "using per-app fallback image %s", fallback.path)
             return _Image(source=IMAGE_SOURCE_APP_FALLBACK, local=fallback)
+        trace(
+            _LOGGER,
+            "no per-app fallback image in %s",
+            self._runtime.cache.root / APP_FALLBACK_DIR,
+        )
         return _Image()
 
     # ------------------------------------------------------------------ artwork exposure

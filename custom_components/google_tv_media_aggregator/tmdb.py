@@ -9,6 +9,8 @@ from typing import Any
 
 import aiohttp
 
+from .trace import trace
+
 _LOGGER = logging.getLogger(__name__)
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
@@ -92,6 +94,23 @@ def _parse_retry_after(value: str | None) -> float:
         return DEFAULT_RETRY_AFTER
 
 
+def _trace_pick(
+    path: str, results: list[dict[str, Any]], match: TmdbMatch | None
+) -> None:
+    if match is None:
+        trace(_LOGGER, "TMDb %s: %d result(s), none with a poster", path, len(results))
+    else:
+        trace(
+            _LOGGER,
+            "TMDb %s: %d result(s), using %s %d %r",
+            path,
+            len(results),
+            match.media_type,
+            match.tmdb_id,
+            match.title,
+        )
+
+
 class TmdbClient:
     """TMDb API client supporting v3 API keys and v4 read access tokens."""
 
@@ -112,6 +131,7 @@ class TmdbClient:
         self, path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         if (remaining := self._blocked_until - time.monotonic()) > 0:
+            trace(_LOGGER, "TMDb rate limited; skipping %s for %.0fs", path, remaining)
             raise TmdbRateLimitError(f"Rate limited for another {remaining:.0f}s")
 
         headers = {"Accept": "application/json"}
@@ -124,6 +144,12 @@ class TmdbClient:
             query["api_key"] = self._api_key
         if self._language and "language" not in query:
             query["language"] = self._language
+        trace(
+            _LOGGER,
+            "TMDb GET %s %s",
+            path,
+            {k: v for k, v in query.items() if k != "api_key"},
+        )
 
         try:
             async with self._session.get(
@@ -132,6 +158,7 @@ class TmdbClient:
                 headers=headers,
                 timeout=REQUEST_TIMEOUT,
             ) as resp:
+                trace(_LOGGER, "TMDb %s: HTTP %s", path, resp.status)
                 if resp.status == 401:
                     raise TmdbAuthError("TMDb rejected the API key")
                 if resp.status == 429:
@@ -146,6 +173,7 @@ class TmdbClient:
                     raise TmdbError(f"TMDb returned HTTP {resp.status} for {path}")
                 data = await resp.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError) as err:
+            trace(_LOGGER, "TMDb %s failed: %s", path, type(err).__name__)
             # Never include str(err): aiohttp errors can embed the request URL (and api_key).
             raise TmdbConnectionError(
                 f"Error talking to TMDb: {type(err).__name__}"
@@ -165,7 +193,10 @@ class TmdbClient:
         data = await self._async_get(
             "/search/movie", {"query": query, "year": year, "include_adult": "false"}
         )
-        return _first_with_poster(data.get("results") or [], MEDIA_TYPE_MOVIE)
+        results = data.get("results") or []
+        match = _first_with_poster(results, MEDIA_TYPE_MOVIE)
+        _trace_pick("/search/movie", results, match)
+        return match
 
     async def async_search_tv(
         self, query: str, year: int | None = None
@@ -175,14 +206,20 @@ class TmdbClient:
             "/search/tv",
             {"query": query, "first_air_date_year": year, "include_adult": "false"},
         )
-        return _first_with_poster(data.get("results") or [], MEDIA_TYPE_TV)
+        results = data.get("results") or []
+        match = _first_with_poster(results, MEDIA_TYPE_TV)
+        _trace_pick("/search/tv", results, match)
+        return match
 
     async def async_search_multi(self, query: str) -> TmdbMatch | None:
         """Return the first movie or TV show with a poster matching the query."""
         data = await self._async_get(
             "/search/multi", {"query": query, "include_adult": "false"}
         )
-        return _first_with_poster(data.get("results") or [])
+        results = data.get("results") or []
+        match = _first_with_poster(results)
+        _trace_pick("/search/multi", results, match)
+        return match
 
     async def async_get_tv(self, tv_id: int) -> TmdbMatch | None:
         """Return a TV show by TMDb ID."""
@@ -201,13 +238,29 @@ class TmdbClient:
         ordered = [tv, movie] if prefer == MEDIA_TYPE_TV else [movie, tv]
         for match in ordered:
             if match is not None:
+                trace(
+                    _LOGGER,
+                    "TMDb /find/%s: using %s %d %r",
+                    imdb_id,
+                    match.media_type,
+                    match.tmdb_id,
+                    match.title,
+                )
                 return match
 
         # Episode/season IMDb IDs resolve to the parent show.
         for key in ("tv_episode_results", "tv_season_results"):
             for result in data.get(key) or []:
                 if isinstance(show_id := result.get("show_id"), int):
+                    trace(
+                        _LOGGER,
+                        "TMDb /find/%s: %s belongs to show %d",
+                        imdb_id,
+                        key,
+                        show_id,
+                    )
                     show = await self.async_get_tv(show_id)
                     if show is not None and show.poster_path:
                         return show
+        trace(_LOGGER, "TMDb /find/%s: no movie or show with a poster", imdb_id)
         return None

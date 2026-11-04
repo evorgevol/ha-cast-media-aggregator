@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant_custom_component.test_util.aiohttp import (
+    AiohttpClientMocker,
+)
 
 from custom_components.google_tv_media_aggregator.const import (
     CONF_SOURCE_ENTITY_ID,
@@ -137,3 +140,33 @@ async def test_diagnostics_redacts_key(hass: HomeAssistant, cache_dir: Path) -> 
     assert diag["tmdb_configured"] is True
     assert diag["aggregators"] == ["stremio", "default"]
     assert diag["players"][0]["entity_id"] == "media_player.pablo_aggregated"
+    (lookup,) = diag["players"][0]["lookup_history"]
+    assert "the source has no media_title; not searching" in lookup["steps"][0]
+    assert diag["lookup_memo"] == {"misses": [], "hits": []}
+
+
+async def test_diagnostics_lookup_history(
+    hass: HomeAssistant, cache_dir: Path, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.get(
+        "https://api.themoviedb.org/3/search/movie", json={"results": []}
+    )
+    aioclient_mock.get(
+        "https://api.themoviedb.org/3/search/multi", json={"results": []}
+    )
+    hass.states.async_set(SOURCE, "playing", {"media_title": "Obscure Thing"})
+    entry = make_entry(cache_dir)
+    await setup_integration(hass, entry)
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert TMDB_KEY not in str(diag)
+    (lookup,) = diag["players"][0]["lookup_history"]
+    assert lookup["trigger"] == "startup"
+    assert lookup["context"]["title"] == "Obscure Thing"
+    assert lookup["outcome"] == {"status": "done", "image_source": "none"}
+    assert isinstance(lookup["duration_ms"], int)
+    assert any("TMDb GET /search/movie" in step for step in lookup["steps"])
+    (miss,) = diag["lookup_memo"]["misses"]
+    assert miss["category"] == "movie"
+    assert miss["key"] == "Obscure Thing"
+    assert miss["expires_in"].startswith("5h 59m")

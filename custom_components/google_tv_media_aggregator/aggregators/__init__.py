@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..tmdb import TmdbAuthError, TmdbError
+from ..trace import trace
 from .base import (
     Aggregator,
     AggregatorDeps,
@@ -52,18 +53,30 @@ class AggregatorRegistry:
         transient = False
         for aggregator in self.aggregators:
             if not aggregator.matches(ctx, player):
+                trace(
+                    _LOGGER,
+                    "%s aggregator skipped: %s",
+                    aggregator.name,
+                    aggregator.skip_reason(ctx, player),
+                )
                 continue
             try:
                 result = await aggregator.async_resolve(ctx, player)
             except TmdbAuthError:
+                trace(
+                    _LOGGER, "%s aggregator: TMDb rejected the API key", aggregator.name
+                )
                 raise
             except TmdbError as err:
-                _LOGGER.debug("%s aggregator failed: %s", aggregator.name, err)
+                trace(_LOGGER, "%s aggregator failed: %s", aggregator.name, err)
                 transient = True
                 continue
             if result is not None:
+                trace(_LOGGER, "%s aggregator found artwork", aggregator.name)
                 return result
+            trace(_LOGGER, "%s aggregator found nothing", aggregator.name)
         if transient:
+            trace(_LOGGER, "nothing found, but an aggregator hit a temporary error")
             raise TransientLookupError
         return None
 

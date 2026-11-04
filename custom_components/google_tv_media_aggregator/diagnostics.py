@@ -42,6 +42,10 @@ async def async_get_config_entry_diagnostics(
                     if state
                     else None
                 ),
+                "lookup_history": [
+                    lookup.as_dict()
+                    for lookup in runtime.lookup_history.get(subentry_id, ())
+                ],
             }
         )
     return {
@@ -57,6 +61,7 @@ async def async_get_config_entry_diagnostics(
             "writable": runtime.cache.writable,
         },
         "aggregators": [agg.name for agg in runtime.registry.aggregators],
+        "lookup_memo": runtime.registry.deps.memo.snapshot(),
         "seen_apps": runtime.seen_apps.apps,
         "players": players,
     }

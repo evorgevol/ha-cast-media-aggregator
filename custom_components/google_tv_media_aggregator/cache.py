@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import slugify
 
 from .const import APP_FALLBACK_DEFAULT, APP_FALLBACK_DIR
+from .trace import trace
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -202,21 +203,21 @@ async def async_download_image(
     try:
         async with session.get(url, timeout=DOWNLOAD_TIMEOUT) as resp:
             if resp.status != 200:
-                _LOGGER.debug("Image download failed (HTTP %s): %s", resp.status, url)
+                trace(_LOGGER, "Image download failed (HTTP %s): %s", resp.status, url)
                 return None
             content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
             content_type = content_type.strip().lower()
             if content_type not in CONTENT_TYPE_EXTENSIONS:
-                _LOGGER.debug("Ignoring non-image content (%s): %s", content_type, url)
+                trace(_LOGGER, "Ignoring non-image content (%s): %s", content_type, url)
                 return None
             data = bytearray()
             async for chunk in resp.content.iter_chunked(64 * 1024):
                 data.extend(chunk)
                 if len(data) > MAX_IMAGE_BYTES:
-                    _LOGGER.debug("Image too large, ignoring: %s", url)
+                    trace(_LOGGER, "Image too large, ignoring: %s", url)
                     return None
     except (aiohttp.ClientError, TimeoutError) as err:
-        _LOGGER.debug("Image download failed (%s): %s", type(err).__name__, url)
+        trace(_LOGGER, "Image download failed (%s): %s", type(err).__name__, url)
         return None
     if not data:
         return None
